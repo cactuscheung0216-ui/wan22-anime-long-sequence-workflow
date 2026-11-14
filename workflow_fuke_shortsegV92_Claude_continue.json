@@ -1,0 +1,543 @@
+{
+  "7": {
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model high"
+    },
+    "inputs": {
+      "unet_name": "wan2.2\\wan2.2\\wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "8": {
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model low"
+    },
+    "inputs": {
+      "unet_name": "wan2.2\\wan2.2\\wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "11": {
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    },
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    }
+  },
+  "12": {
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    },
+    "inputs": {
+      "vae_name": "wan_2.1_vae.safetensors"
+    }
+  },
+  "13": {
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "ORIGINAL BASE IMAGE (V92 - grok base)"
+    },
+    "inputs": {
+      "image": "grok-image-11990385-5fb2-4bca-81c4-ab097b339968.jpg"
+    }
+  },
+  "15": {
+    "class_type": "FindPerfectResolution",
+    "_meta": {
+      "title": "FPR - ORIGINAL (native aspect, no squash)"
+    },
+    "inputs": {
+      "desired_width": 832,
+      "desired_height": 0,
+      "divisible_by": 16,
+      "upscale": false,
+      "upscale_method": "lanczos",
+      "small_image_mode": "none",
+      "pad_color": "#000000",
+      "image": [
+        "13",
+        0
+      ]
+    }
+  },
+  "17": {
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAEEncode - ORIGINAL (identity anchor)"
+    },
+    "inputs": {
+      "pixels": [
+        "15",
+        2
+      ],
+      "vae": [
+        "12",
+        0
+      ]
+    }
+  },
+  "19": {
+    "class_type": "PathchSageAttentionKJ",
+    "_meta": {
+      "title": "Patch Sage Attention - HIGH"
+    },
+    "inputs": {
+      "sage_attention": "disabled",
+      "allow_compile": false,
+      "model": [
+        "7",
+        0
+      ]
+    }
+  },
+  "20": {
+    "class_type": "PathchSageAttentionKJ",
+    "_meta": {
+      "title": "Patch Sage Attention - LOW"
+    },
+    "inputs": {
+      "sage_attention": "disabled",
+      "allow_compile": false,
+      "model": [
+        "8",
+        0
+      ]
+    }
+  },
+  "21": {
+    "class_type": "ModelPatchTorchSettings",
+    "_meta": {
+      "title": "FP16 Accumulation - HIGH"
+    },
+    "inputs": {
+      "enable_fp16_accumulation": true,
+      "model": [
+        "19",
+        0
+      ]
+    }
+  },
+  "22": {
+    "class_type": "ModelPatchTorchSettings",
+    "_meta": {
+      "title": "FP16 Accumulation - LOW"
+    },
+    "inputs": {
+      "enable_fp16_accumulation": true,
+      "model": [
+        "20",
+        0
+      ]
+    }
+  },
+  "23": {
+    "class_type": "ModelPatchTorchSettings",
+    "_meta": {
+      "title": "FP16 Accumulation - HIGH (passthrough)"
+    },
+    "inputs": {
+      "enable_fp16_accumulation": true,
+      "model": [
+        "21",
+        0
+      ]
+    }
+  },
+  "200": {
+    "class_type": "ModelSamplingSD3",
+    "_meta": {
+      "title": "ModelSamplingSD3 - shift=8"
+    },
+    "inputs": {
+      "shift": 8,
+      "model": [
+        "23",
+        0
+      ]
+    }
+  },
+  "201": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "SVI Pro HIGH lora"
+    },
+    "inputs": {
+      "lora_name": "wan_22\\SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "200",
+        0
+      ]
+    }
+  },
+  "24": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "SVI Pro LOW lora"
+    },
+    "inputs": {
+      "lora_name": "wan_22\\SVI_v2_PRO_Wan2.2-I2V-A14B_LOW_lora_rank_128_fp16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "22",
+        0
+      ]
+    }
+  },
+  "25": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Lightning LOW lora"
+    },
+    "inputs": {
+      "lora_name": "wan_22\\wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors",
+      "strength_model": 1,
+      "model": [
+        "24",
+        0
+      ]
+    }
+  },
+  "26": {
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Lightning HIGH lora"
+    },
+    "inputs": {
+      "lora_name": "wan_22\\Wan_2_2_I2V_A14B_HIGH_lightx2v_4step_lora_v1030_rank_64_bf16.safetensors",
+      "strength_model": 1,
+      "model": [
+        "201",
+        0
+      ]
+    }
+  },
+  "30": {
+    "class_type": "INTConstant",
+    "_meta": {
+      "title": "NO_LIGHTNING_END_STEP = 1"
+    },
+    "inputs": {
+      "value": 2
+    }
+  },
+  "31": {
+    "class_type": "INTConstant",
+    "_meta": {
+      "title": "LIGHTNING_HIGH_END_STEP = 5  [V87: KS2->5]"
+    },
+    "inputs": {
+      "value": 6
+    }
+  },
+  "32": {
+    "class_type": "INTConstant",
+    "_meta": {
+      "title": "TOTAL_STEPS = 9  [V87: 1+4+4 Lightning]"
+    },
+    "inputs": {
+      "value": 10
+    }
+  },
+  "33": {
+    "class_type": "FloatConstant",
+    "_meta": {
+      "title": "CFG_NO_LIGHTNING = 3.0"
+    },
+    "inputs": {
+      "value": 3.0
+    }
+  },
+  "40": {
+    "class_type": "Seed (rgthree)",
+    "_meta": {
+      "title": "Seed - Clip 1"
+    },
+    "inputs": {
+      "seed": 123456789
+    }
+  },
+  "50": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP - C1 Positive"
+    },
+    "inputs": {
+      "text": "same character identity as reference image, long straight glossy white hair, red eyes, cyan blue silk qipao cheongsam with gold floral embroidery, red frog buttons and red tassels, high mandarin collar, high side slit, no costume change, no hairstyle change, no extra hair accessories, no twin tails, anime girl dancing under pink cherry blossoms",
+      "clip": [
+        "11",
+        0
+      ]
+    }
+  },
+  "51": {
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP - C1 Negative"
+    },
+    "inputs": {
+      "text": "blurry, low quality, distorted face, extra limbs, watermark, text, letters, words, signature, logo, subtitles, caption, typography, written characters, Chinese characters, English text, glyphs, pale washed out colors, desaturated, grayish, different outfit, costume change, clothing change, hair color change, twin tails, ponytail, short hair, different dress, kimono overlay, extra hair ornaments changing every frame, camera shake, camera movement, handheld, zoom in, zoom out, shaking background, swaying trees, trees moving, wind blowing branches, background motion, jitter, flicker, motion blur",
+      "clip": [
+        "11",
+        0
+      ]
+    }
+  },
+  "180": {
+    "class_type": "LoadLatent",
+    "_meta": {
+      "title": "Load prev round latent"
+    },
+    "inputs": {
+      "latent": "fuke_shortsegV92_Claude_P1_prev.latent"
+    }
+  },
+  "100": {
+    "class_type": "IAMCCS_WanImageMotion",
+    "_meta": {
+      "title": "ShortSeg WanImageMotion | V92-Claude: lr=0.80 anchor=ORIGINAL prev=last | outfit-lock prompt"
+    },
+    "inputs": {
+      "length": 81,
+      "motion_latent_count": 1,
+      "motion": 1.18,
+      "motion_mode": "motion_only (prev_samples)",
+      "add_reference_latents": false,
+      "latent_precision": "fp32",
+      "vram_profile": "normal",
+      "include_padding_in_motion": false,
+      "safety_preset": "safe",
+      "lock_start_slots": 1,
+      "diagnostic_log": false,
+      "use_prev_samples": true,
+      "latent_refresh": 0.8,
+      "delta_max": 0.0,
+      "positive": [
+        "50",
+        0
+      ],
+      "negative": [
+        "51",
+        0
+      ],
+      "anchor_samples": [
+        "17",
+        0
+      ],
+      "prev_samples": [
+        "180",
+        0
+      ]
+    }
+  },
+  "101": {
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KS1 - C1 (svi_pro HIGH) | V87: steps=9, cfg=3.0, end@1"
+    },
+    "inputs": {
+      "add_noise": "enable",
+      "noise_seed": [
+        "40",
+        0
+      ],
+      "steps": [
+        "32",
+        0
+      ],
+      "cfg": [
+        "33",
+        0
+      ],
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 0,
+      "end_at_step": 2,
+      "return_with_leftover_noise": "enable",
+      "model": [
+        "201",
+        0
+      ],
+      "positive": [
+        "100",
+        0
+      ],
+      "negative": [
+        "100",
+        1
+      ],
+      "latent_image": [
+        "100",
+        2
+      ]
+    }
+  },
+  "102": {
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KS2 - C1 (lightning high) | V87: 1->5 (4steps)"
+    },
+    "inputs": {
+      "add_noise": "disable",
+      "noise_seed": [
+        "40",
+        0
+      ],
+      "steps": [
+        "32",
+        0
+      ],
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 2,
+      "end_at_step": 6,
+      "return_with_leftover_noise": "enable",
+      "model": [
+        "26",
+        0
+      ],
+      "positive": [
+        "100",
+        0
+      ],
+      "negative": [
+        "100",
+        1
+      ],
+      "latent_image": [
+        "101",
+        0
+      ]
+    }
+  },
+  "103": {
+    "class_type": "KSamplerAdvanced",
+    "_meta": {
+      "title": "KS3 - C1 (lightning low) | V87: 5->9 (4steps)"
+    },
+    "inputs": {
+      "add_noise": "disable",
+      "noise_seed": [
+        "40",
+        0
+      ],
+      "steps": [
+        "32",
+        0
+      ],
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "start_at_step": 6,
+      "end_at_step": 10,
+      "return_with_leftover_noise": "disable",
+      "model": [
+        "25",
+        0
+      ],
+      "positive": [
+        "100",
+        0
+      ],
+      "negative": [
+        "100",
+        1
+      ],
+      "latent_image": [
+        "102",
+        0
+      ]
+    }
+  },
+  "104": {
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode - C1"
+    },
+    "inputs": {
+      "samples": [
+        "103",
+        0
+      ],
+      "vae": [
+        "12",
+        0
+      ]
+    }
+  },
+  "145": {
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "ORIGINAL decode for color reference"
+    },
+    "inputs": {
+      "samples": [
+        "17",
+        0
+      ],
+      "vae": [
+        "12",
+        0
+      ]
+    }
+  },
+  "150": {
+    "class_type": "ImageColorMatch+",
+    "_meta": {
+      "title": "ImageColorMatch+ vs ORIGINAL | LAB 0.90 | V92-Claude display-only"
+    },
+    "inputs": {
+      "image": [
+        "104",
+        0
+      ],
+      "reference": [
+        "145",
+        0
+      ],
+      "color_space": "LAB",
+      "factor": 0.9,
+      "device": "auto",
+      "batch_size": 0
+    }
+  },
+  "160": {
+    "class_type": "VHS_VideoCombine",
+    "_meta": {
+      "title": "ShortSeg VideoCombine G"
+    },
+    "inputs": {
+      "frame_rate": 30,
+      "loop_count": 0,
+      "filename_prefix": "FUKE_ShortSegV92_Claude_P1_Rxx",
+      "format": "video/h264-mp4-high",
+      "pingpong": false,
+      "save_output": true,
+      "images": [
+        "150",
+        0
+      ]
+    }
+  },
+  "181": {
+    "class_type": "SaveLatent",
+    "_meta": {
+      "title": "SaveLatent <- KS3 raw (V92-Claude dual-path, no IPAdapter)"
+    },
+    "inputs": {
+      "samples": [
+        "103",
+        0
+      ],
+      "filename_prefix": "fuke_shortsegV92_Claude_P1_latent/FUKE_ShortSegV92_Claude_P1_Rxx_FINAL"
+    }
+  }
+}
