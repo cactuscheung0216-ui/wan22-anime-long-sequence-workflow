@@ -1,318 +1,230 @@
-# V92 — Wan 2.2 I2V · 24-Round Multi-Round Video Pipeline
+# Wan 2.2 I2V · 24-Round Multi-Round Video Pipeline (V109 / V92)
 
-**Seam-repaired, colour-calibrated, and QC-proven.**
+**Long-sequence multi-round Wan 2.2 I2V-A14B generation + commercial 60 fps 4-stage post-processing.**
 
-24 rounds · 1,852 frames · 61.73 s · 832×1232 @ 30 fps · one continuous dance, no cuts, no loop.
+- **Latest Release — V109 (`544×960 → 960×1680 @ 60 fps`, 115.70 s)**: Full-body 9:16 pipeline restoring the **P1 golden sampling kernel** (`steps 2+4+4=10`, `MLC=1`, `lock_start_slots=1`, `add_reference_latents=false`, `lr=0.80`, `motion=1.18`, per-round `LAB 0.90` color match), full-body anti-crop framing guardrails, and a **bundled 4-stage post-processing runner** (`postprocess_24R_V109.py`) outputting commercial BT.709 H.264 High@L4.2 60 fps (`6,942` frames, `17.73 Mbps`, `+faststart`).
+- **Legacy Baseline — V92 (`832×1232 @ 30 fps`, 61.73 s)**: Original 2:3 anime head-to-thigh choreography release (`1,852` frames @ 30 fps), kept alongside V109 for reference and comparison.
 
-V92 is a full multi-round image-to-video pipeline for **Wan 2.2 I2V-A14B**. It generates 24 rounds
-that chain off each other through a shared latent, then runs a post-processing chain that repairs the
-seams, calibrates the colour against the reference image, and measures the result. The QC numbers
-shipped here are measured **on the delivered file**, not predicted by the script that made it.
-
-> 本仓库是 V92 的完整发布线：Wan 2.2 I2V-A14B 多轮长视频流水线，24 轮、约 62 秒、一镜到底。
-> 重点解决三个问题：**接缝可见**（光流诊断 + 重定时）、**轮间色彩漂移**（逐轮 LAB 匹配 + 全局校色）、
-> **动作重复**（按段落结构编排，每轮换身体部位与机位）。
+> 本仓库提供 **Wan 2.2 I2V-A14B** 多轮长序列连续视频生成（24 轮潜空间链式续写，一镜到底）及配套工业级后处理完整管线。  
+> 最新版本 **V109** 重点解决了四个核心工程问题：  
+> 1. **采样核回归修复**：退回实验期引入重影与背景网格的参数，恢复经过 24 轮全量验证的 P1 黄金采样核；  
+> 2. **全身防裁切构图锁**：支持 9:16 全身入画（`544×960 @ 16fps`，单轮 `5.06s`，24 轮 `115.70s`），解决仅上半身挥手、脚部出画与负向护栏冲突；  
+> 3. **完整四阶段后处理闭环**：仓库直接附带 [`postprocess_24R_V109.py`](postprocess_24R_V109.py)（接缝直方图校准 → 2× 模型超分 + 轻量 CAS 锐化 → 可选局部 Detailer → `FL_RIFE` 4× 光流补帧至 64fps + BT.709 `60fps` 商用编码）；  
+> 4. **RIFE 分片重叠吞帧修复与色调保护**：修复 `RIFE_OVERLAP_TRIM` 吞帧漏洞，默认关闭老旧灰蒙渐变调色曲线，保留全长 24 轮尾声。
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Features](#features)
+- [Release Tracks (V109 vs V92)](#release-tracks-v109-vs-v92)
+- [V109 Architecture & Fixes](#v109-architecture--fixes)
+- [Bundled Files](#bundled-files)
 - [Requirements](#requirements)
-- [Installation](#installation)
 - [Custom Nodes](#custom-nodes)
 - [Models](#models)
-- [Workflow](#workflow)
-- [Parameters](#parameters)
-- [Results](#results)
+- [Quick Start (V109)](#quick-start-v109)
+- [Post-Processing Pipeline (`postprocess_24R_V109.py`)](#post-processing-pipeline-postprocess_24r_v109py)
+- [Workflow Graph & Parameters](#workflow-graph--parameters)
+- [Measured Results](#measured-results)
 - [Changelog](#changelog)
 - [License](#license)
-- [Contact](#contact)
+- [Credits](#credits)
 
 ---
 
-## Overview
+## Release Tracks (V109 vs V92)
 
-Multi-round I2V workflows usually break in one of three places: the join between rounds stalls or
-jumps, the colour drifts round over round, and every round repeats the same gesture. V92 is built
-around those three failure modes specifically, and ships the QC that proves each one was addressed.
+| Track | Generation Res / FPS | Frames (24R, drop=4) | Delivery Res / FPS | Duration | Post-Process Script | Status |
+|---|---|---|---|---|---|---|
+| **V109 (Recommended)** | `544×960` @ `16 fps` | `81 + 23×77 = 1,852` | `960×1680` @ `60 fps` (BT.709 High L4.2) | `115.70 s` | **Bundled** (`postprocess_24R_V109.py`) | **Current** |
+| **V92 (Baseline)** | `832×1232` @ `30 fps` | `81 + 23×77 = 1,852` | `832×1232` @ `30 fps` | `61.73 s` | External toolchain (not bundled) | Archived baseline |
 
-| | |
+---
+
+## V109 Architecture & Fixes
+
+V109 converges generation sampling stability, full-body prompt engineering, and 4-stage post-processing fixes into a clean reproducible pipeline:
+
+### 1. P1 Golden Sampling Kernel Restoration
+Controlled ablation across R01–R09 established that experimental sweeps (`add_reference_latents=True`, `steps=12`, `MLC=2`, `latent_refresh=0.65`) degraded long-horizon stability:
+- **`add_reference_latents = False`**: Enabling reference latents projected ghosted silhouettes/halos from the base image into upper-frame motion and introduced background sky grid artifacts.
+- **`steps = 10 (2+4+4)`**: Pushing LightX2V 4-step LoRAs beyond 10 total steps (`steps=12`) over-fitted denoising and amplified checkerboard texture.
+- **`motion_latent_count (MLC) = 1`, `lock_start_slots = 1`**: Matches `DROP_HEAD_FROM_R2 = 4` seam slicing (`1,852` total frames across 24 rounds).
+- **`latent_refresh = 0.80`, `motion = 1.18`, `CFG = 3.0`, `ImageColorMatch+ (LAB, 0.90)`**: Suppresses dark-area crush and round-to-round color drift while keeping generation outputs separated from the raw `KS3 -> SaveLatent` handoff path.
+
+### 2. Full-Body 9:16 Framing & Motion Guardrails
+- Switched `FindPerfectResolution` target to `544×960` at `16 fps` (`81 frames/round ≈ 5.06 s`), expanding a 24-round sequence from ~62 s to **115.70 s**.
+- Added full-length framing anchors (`OUTFIT_LOCK` / `DANCE_BASE`) plus anti-crop negative prompts (`cropped feet, feet out of frame, cut off legs, cut off ankles, close-up, medium shot, zooming in`) so lower-body & footwear choreography stays inside the shot across all 24 rounds.
+- Removed conflicting slow/soft terms from `MOTION_GUARDRAIL` so it never collides with `FORBIDDEN_ALWAYS` assertions or freezes Round 1 inertia.
+- Added strict 24-round validation inside `--dry-run` (all 24 rounds built & asserted before anything is queued).
+
+### 3. 4-Stage Post-Processing Fixes (`postprocess_24R_V109.py`)
+- **Stage 1 (`stage1_merged_544x960_16fps.mp4`)**:
+  - Per-round single-candidate selection (`round_videos`) prevents duplicate concatenations on retried rounds.
+  - `GLOBAL_ANCHOR_WEIGHT = 0.10` + `SEAM_LOCAL_WEIGHT = 0.25` in LAB CDF histogram space, with `seam_blend=False` (`SEAM_MSE_BLEND_MAX = 1500.0`) to eliminate semi-transparent ghosting on moving limbs.
+- **Stage 2 (`stage2_upscaled_960x1680_16fps.mp4`)**:
+  - Chunked (`chunk_size=64`) 2× upscaling via `RealESRGAN_x2plus.pth` + Lanczos exact resize to `960×1680`, followed by `ImageCASharpening+` (`amount=0.20`), `INTERMEDIATE_CRF=12`, and `video/h264-mp4-high`.
+- **Stage 3 (Optional, skipped by default in `--stage all`)**:
+  - Per-frame list iteration (`ImpactImageBatchToImageList` → `AILab_YoloV8` `mask_count="2"` → `SEGSDetailer` → `SEGSPaste` → `ImageListToImageBatch`) to avoid batch-index mismatch; skipped by default (`stages = [1, 2, 4]`) to prevent SDXL frame-to-frame micro-flicker.
+- **Stage 4 (`stage4_rife_960x1680_64fps.mp4` → `FINAL_960x1680_60fps.mp4`)**:
+  - Chunked 4× `FL_RIFE` (`rife49`, `ensemble=True`) with **`RIFE_OVERLAP_TRIM = 1`** (fixing an off-by-3 bug where trimming 4 frames dropped 3 interpolated frames at every 64-frame chunk boundary!).
+  - `--master-grade` defaults to `False` (disables legacy fogging/desaturation curves), `--trim-duration` defaults to `-1.0` (preserves full 24-round duration), and final output uses `libx264 -preset slow -crf 14 -profile:v high -level 4.2 -pix_fmt yuv420p` with full BT.709 color tags (`bt709`) and `-movflags +faststart`.
+
+### 4. Local Proxy Isolation & Configurable Environment
+- Both Python scripts use `urllib.request.ProxyHandler({})` for ComfyUI HTTP calls so local/system HTTP proxies never intercept loopback (`127.0.0.1`) API traffic.
+- Machine-specific paths are fully parameterized via CLI arguments (`--comfy-root`, `--comfy-url`, `--output-dir`, `--root`, `--base-image`) and environment variables (`COMFY_ROOT`, `COMFY_URL`, `FUKE_OUTPUT_DIR`, `ORIGINAL_BASE`, `PY_COMFY`).
+
+---
+
+## Bundled Files
+
+| File | Purpose |
 |---|---|
-| **Base model** | Wan 2.2 I2V-A14B (fp8 scaled), high + low noise UNET |
-| **Rounds** | 24 (round 1 = bootstrap, rounds 2–24 continue from the previous latent) |
-| **Frame schedule** | `81 + 23×77 = 1,852` frames (4 head frames dropped from R02+) |
-| **Output** | 832×1232, 30 fps, h264 High / yuv420p, 14.59 Mbps, faststart |
-| **Duration** | 61.73 s |
-| **Audio** | none — the film is silent; add music after |
-| **Hardware used** | RTX 3090 (24 GB) |
-
-### The three problems this solves
-
-**1. Visible joins.** Naive round-to-round concatenation freezes at every boundary — the camera
-appears to stall, then lurch. V92 diagnoses each join by optical flow and **re-times the seam
-window** so the join moves at the same speed as the surrounding footage.
-
-**2. Colour drift between rounds.** Each round drifts a little further in hue and brightness, so the
-joins show a colour step. Every round is matched to the reference image through ComfyUI's
-`ImageColorMatch+` (LAB, factor 0.9), then the finished film gets one **global LAB offset**
-calibrated against the reference. A global offset adds no seam, unlike per-round offsets.
-
-**3. The "same pose every round" problem.** A 24-round video where the dancer repeats one gesture is
-dead on arrival. V92's choreography is written as a **musical structure** — intro, verse,
-pre-chorus, chorus, interlude, second chorus, outro — with different camera framing, a different
-body part per round, and two recurring motifs that return in a different arrangement each time.
-
-### Choreography structure
-
-| Section | Rounds | Purpose |
-|---|---|---|
-| Intro | R01–R03 | restrained, confident; introduces motif A |
-| Verse | R04–R08 | torso / hip / shoulder groove; R06 breath |
-| Pre-chorus | R09–R11 | tension rising; R11 sinks before the drop |
-| Chorus 1 | R12–R15 | accent peaks R12, R15; motif A scaled up, motif B appears |
-| Interlude | R16–R17 | lower centre of gravity, profile, gaze change |
-| Chorus 2 | R18–R21 | accent peaks R18, R21; R19 slow build |
-| Outro | R22–R24 | R23 final accent (motif A, two-hand), R24 resolves |
-
-- **Motif A** — *"her right hand draws a line from her hip up to her cheek and pushes out toward the
-  camera"* — returns at R01 / R12 / R23, each time paired with different movement.
-- **Motif B** — *"her arms cross in front of her chest and snap open wide"* — returns at R05 / R15 / R21.
-- **Round classes** — `M` mid-tempo ×8, `Q` quicker ×6, `P` accent peak ×5, `S` slower ×5.
-  `powerful` appears only in `P` rounds, and `P` rounds are never closer than 2 rounds apart.
-
----
-
-## Features
-
-- **Latent bridging** — round N+1 loads round N's saved latent (`LoadLatent`) and continues from it,
-  so the motion carries across the boundary instead of restarting.
-- **Per-round colour match** — `ImageColorMatch+` in LAB at factor 0.9, applied every round.
-- **Global colour calibration** — one LAB offset on the finished film, matched to the reference
-  image; lands within **0.0019** LAB L of the reference (tolerance 0.05).
-- **Optical-flow seam retiming** — the seam window is re-timed so join speed matches interior
-  motion instead of stalling or jumping.
-- **Head-frame trim sweep** — the drop count is *measured*, not assumed: a sweep over trim 0…12
-  showed **trim = 4 is the only value** that brings join error below the film's own interior motion.
-- **Automatic QC + retry** — each round is checked for large-change pixel pop and for near-duplicate
-  frames; a failing round is re-seeded (`MAX_RETRIES = 2`, `QC_RETRIES = 2`).
-- **Structured prompt vocabulary** — forbidden-term lists per round class, so a round cannot drift
-  outside its intended motion family.
-- **Full QC workbook** — a 15-sheet Excel report where every figure traces back to a raw CSV/JSON
-  in `data/`.
+| [`run_fuke_shortsegV109.py`](run_fuke_shortsegV109.py) | V109 24-round ComfyUI generator (`544×960 @ 16fps`, latent chaining, pop-QC retries) |
+| [`postprocess_24R_V109.py`](postprocess_24R_V109.py) | V109 4-stage post-processor (`Stage 1` seam match → `Stage 2` 2× upscale+CAS → optional `Stage 3` → `Stage 4` RIFE 4× + BT.709 60fps delivery) |
+| [`workflow_fuke_shortsegV109_bootstrap.json`](workflow_fuke_shortsegV109_bootstrap.json) | ComfyUI API workflow for Round 1 (bootstrap from anchor image) |
+| [`workflow_fuke_shortsegV109_continue.json`](workflow_fuke_shortsegV109_continue.json) | ComfyUI API workflow for Rounds 2–24 (`LoadLatent` chaining) |
+| [`run_fuke_shortsegV92_Claude.py`](run_fuke_shortsegV92_Claude.py) | Legacy V92 (`832×1232 @ 30fps`) generator |
+| [`workflow_fuke_shortsegV92_Claude_bootstrap.json`](workflow_fuke_shortsegV92_Claude_bootstrap.json) | Legacy V92 bootstrap API workflow |
+| [`workflow_fuke_shortsegV92_Claude_continue.json`](workflow_fuke_shortsegV92_Claude_continue.json) | Legacy V92 continue API workflow |
 
 ---
 
 ## Requirements
 
 ### Hardware
-
-| | |
-|---|---|
-| **GPU** | RTX 3090 (24 GB) — the fp8 UNETs plus the rank-128 LoRAs are the memory ceiling |
-| **VRAM fallback** | drop the LightX2V-only path if you are tight |
-| **RAM** | 32 GB+ recommended (the post-processing chain holds full-frame LAB tensors) |
-| **Disk** | ~45 GB for the models listed below |
+- **GPU**: NVIDIA RTX 3090 (24 GB VRAM) or equivalent — fits the `fp8_scaled` 14B UNETs + rank-128 SVI v2 PRO LoRAs + LightX2V LoRAs and 64-frame post-process chunks.
+- **System RAM**: 32 GB+ recommended.
+- **Disk**: ~45 GB for Wan 2.2 base models, CLIP/VAE, LoRAs, and post-processing models.
 
 ### Software
-
-| Component | Version / note |
-|---|---|
-| **ComfyUI** | ak3 (秋葉 aaaki v3) or upstream ComfyUI |
-| **Python (generation)** | the ComfyUI venv — needs `kornia`, `mediapipe` |
-| **Python (post-processing)** | a second interpreter — needs `opencv-python`, `numpy`, `openpyxl`, `torch` |
-| **ffmpeg / ffprobe** | on `PATH` — the seam and QC tooling shells out to both |
-
-The two Python interpreters are separate on purpose: the ComfyUI venv carries `kornia`/`mediapipe`
-but not `openpyxl`, and the post-processing venv carries `openpyxl` but not `kornia`. `v92_pipeline.py`
-takes both paths as constants (`PY_SYS`, `PY_COMFY`) and dispatches each tool to the interpreter that
-actually has its dependencies.
-
----
-
-## Installation
-
-### 1. Custom nodes
-
-Install the packs listed in [Custom Nodes](#custom-nodes) via ComfyUI Manager, or clone them into
-`<ComfyUI>/custom_nodes/`.
-
-### 2. Models
-
-Place the files listed in [Models](#models) into the matching `<ComfyUI>/models/` subfolder.
-A `put_vae_here` placeholder file in `models/vae/` marks that folder as the VAE target.
-
-### 3. Reference image
-
-Put your anchor image in `<ComfyUI>/input/` and set its filename in the runner:
-
-```python
-ORIGINAL_BASE = "your_anchor_image.jpg"
-```
-
-The reference image drives the whole film's identity, costume and palette — it is the image every
-round is colour-matched against. The image shipped with this pack was made with **Grok (xAI)**;
-swap it for your own, but **if you change the face, re-verify the colour baseline** — the global
-calibration offset is computed against that specific image.
-
-### 4. Paths in the runner
-
-`run_fuke_shortsegV92_Claude.py` has three machine-specific constants near the top:
-
-```python
-API_URL    = "http://127.0.0.1:8188/prompt"   # ComfyUI must be running
-COMFY_ROOT = r"<path to your ComfyUI>"        # parent of the ComfyUI folder
-OUTPUT_DIR = r"<path where rounds are written>"
-```
-
-`COMFY_ROOT` and `OUTPUT_DIR` are also readable from the `COMFY_ROOT` / `FUKE_OUTPUT_DIR`
-environment variables in the sanitized upload copy.
-
-### 5. Generate
-
-Start ComfyUI, then:
-
-```bash
-# look at the first 6 rounds before committing to all 24
-python run_fuke_shortsegV92_Claude.py --rounds 6
-
-# dry run — validate prompts and workflow wiring, generate nothing
-python run_fuke_shortsegV92_Claude.py --dry-run
-
-# full run (24 rounds, with automatic QC + retry)
-python run_fuke_shortsegV92_Claude.py
-```
-
-Useful flags: `--tag S` · `--motion F` · `--cfg F` · `--base-image NAME` · `--start-round K` ·
-`--drop N` · `--no-qc` · `--no-merge`.
-
-> **Framing note.** The shipped anchor is framed head-to-thigh, so V92's choreography only uses body
-> parts that are actually visible in frame — arms, shoulders, chest, torso, hips, head, gaze, hands.
-> To do full-body dance you need a full-length anchor image. The runner has a `--base-image` switch
-> for this, but changing the image changes how much of the face occupies the frame, so the colour and
-> identity baseline must be re-verified.
-
-### 6. Post-process
-
-`v92_pipeline.py` drives the whole repair chain. Steps run in this order and can be run individually:
-
-```bash
-python v92_pipeline.py --step all              # everything
-python v92_pipeline.py --step cm,merge         # just two steps
-```
-
-| Step | Does |
-|---|---|
-| `inventory` | inventory the source rounds, verify the frame schedule against the baseline |
-| `probe` | measure per-round colour statistics against the reference |
-| `cm` | pick the colour-match factor and apply per-round matching |
-| `stage` | stage the rounds into flat segments for measurement |
-| `diagnose` | diagnose each join, sweep the head-trim value |
-| `merge` | re-time the seams and merge into the master |
-| `delivery` | apply the global LAB calibration, encode the delivery file |
-| `verify` | QC the merged file: seam metrics, scene spikes, container audit |
-| `verify_cm` | re-measure colour after matching |
-| `measure` | optical flow, limb amplitude, pose repetition, flow decomposition |
-| `report` | build the Excel workbook + Markdown report |
-
-Every step records its status, return code and log path to `_pipeline_state.json`, so an
-interrupted run resumes where it stopped.
-
-### 7. Build the report
-
-```bash
-python v92_build_report.py --root <repair_dir> --post <post_dir> --out <report.md> --outbox <delivery_dir>
-```
-
-Produces `V92Claude_24R_交付报告.xlsx` (15 sheets), a Markdown repair report, and the `data/` folder
-holding every raw CSV/JSON the report is built from.
+- **ComfyUI** (with custom nodes listed below).
+- **Python 3.10+** with `opencv-python` and `numpy` (used for automatic pop/teleport QC in `run_fuke_shortsegV109.py` and Stage 1 processing in `postprocess_24R_V109.py`).
+- **`ffmpeg` & `ffprobe`** available on `PATH`.
 
 ---
 
 ## Custom Nodes
 
-These are the packs V92 actually loads. Each node in the workflow is traced to its owning pack:
+### Required for Generation & Default Post-Processing (`--stage all`: Stages 1, 2, 4)
 
-| Pack | GitHub | Licence | Provides |
+| Pack | Repository | Licence | Nodes Used |
 |---|---|---|---|
-| **IAMCCS-nodes** | https://github.com/IAMCCS/IAMCCS-nodes | GPL | `IAMCCS_WanImageMotion` — the motion/latent-bridge node |
+| **IAMCCS-nodes** | https://github.com/IAMCCS/IAMCCS-nodes | GPL | `IAMCCS_WanImageMotion` |
 | **ComfyUI-KJNodes** | https://github.com/kijai/ComfyUI-KJNodes | GPL | `PathchSageAttentionKJ`, `ModelPatchTorchSettings` |
-| **VideoHelperSuite** | https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite | GPL | `VHS_VideoCombine` |
-| **comfyui_essentials** | https://github.com/cubiq/comfyui_essentials | MIT | `ImageColorMatch+`, `ModelSamplingSD3` |
-| **comfyui-find-perfect-resolution** | https://github.com/ashtar1984/comfyui-find-perfect-resolution | *(no licence file in the repo)* | `FindPerfectResolution` |
+| **VideoHelperSuite** | https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite | GPL | `VHS_LoadVideo`, `VHS_VideoCombine` |
+| **comfyui_essentials** | https://github.com/cubiq/comfyui_essentials | MIT | `ImageColorMatch+`, `ImageCASharpening+`, `ModelSamplingSD3` |
+| **comfyui-find-perfect-resolution** | https://github.com/ashtar1984/comfyui-find-perfect-resolution | *(unspecified)* | `FindPerfectResolution` |
 | **rgthree-comfy** | https://github.com/rgthree/rgthree-comfy | MIT | `Seed` (rgthree) |
-| **ComfyUI-GGUF** | https://github.com/city96/ComfyUI-GGUF | Apache 2.0 | *optional* — only if you swap in the GGUF UNETs |
+| **ComfyUI_Fill-Nodes** | https://github.com/filliptm/ComfyUI_Fill-Nodes | — | `FL_RIFE` (Stage 4) |
 
-Everything else the graph uses is **ComfyUI core**: `UNETLoader`, `CLIPLoader`, `VAELoader`,
-`LoadImage`, `VAEEncode`, `VAEDecode`, `KSamplerAdvanced`, `ModelSamplingSD3`, `SaveLatent`,
-`LoadLatent`.
+### Optional Custom Nodes (for `--stage 3` or `--upscale-mode sdxl`)
 
-> The post-processing chain additionally calls a set of standalone measurement scripts
-> (`probe_round_color.py`, `fix_seams_retime.py`, `sweep_trim.py`, `qc_merged.py`,
-> `compare_merged_seams.py`, `check_seam_scene_spikes.py`, `round_region_metrics.py`,
-> `measure_limb_amplitude.py`, `flow_decomposition.py`, `wrist_local_flow_test.py`,
-> `fast_region_displacement.py`, `audit_delivery.py`, `analyze_rounds.py`,
-> `reference_color_match.py`, `measure_encode_roundtrip.py`, `run_colormatch.py`,
-> `stage_rounds_dir.py`, `seam_jump_analysis.py`). These are the QC toolchain and are **not**
-> bundled here — the workflow, the runner and the report builder are; the measurement scripts are
-> listed so you know what the numbers in [Results](#results) were produced with.
+| Pack | Repository | Nodes Used |
+|---|---|---|
+| **ComfyUI-Impact-Pack** | https://github.com/ltdrdata/ComfyUI-Impact-Pack | `ImpactImageBatchToImageList`, `SEGSDetailer`, `SEGSPaste`, `MaskToSEGS`, `ToBasicPipe` |
+| **ComfyUI-RMBG** | https://github.com/1038lab/ComfyUI-RMBG | `AILab_YoloV8` |
+| **ComfyUI_UltimateSDUpscale** | https://github.com/ssitu/ComfyUI_UltimateSDUpscale | `UltimateSDUpscale` |
+| **ComfyUI-GGUF** | https://github.com/city96/ComfyUI-GGUF | Optional if swapping in GGUF UNETs |
+
+Core ComfyUI nodes also used: `UNETLoader`, `CLIPLoader`, `VAELoader`, `LoadImage`, `VAEEncode`, `VAEDecode`, `CLIPTextEncode`, `KSamplerAdvanced`, `SaveLatent`, `LoadLatent`, `UpscaleModelLoader`, `ImageUpscaleWithModel`, `ImageScale`, `ImageListToImageBatch`, `GrowMask`, `CheckpointLoaderSimple`.
 
 ---
 
 ## Models
 
-No weights are bundled. Download them from their official sources and follow their licences.
+No weights are bundled. Place them under `<ComfyUI>/models/`:
 
-| Role | File | Put in |
+| Role | Filename | Target Folder |
 |---|---|---|
-| UNET (high noise) | `wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors` | `models/diffusion_models/` |
-| UNET (low noise) | `wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors` | `models/diffusion_models/` |
-| Text encoder | `umt5_xxl_fp8_e4m3fn_scaled.safetensors` (type `wan`) | `models/LLM/` |
+| UNET (high noise) | `wan2.2/wan2.2/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors` | `models/diffusion_models/` |
+| UNET (low noise) | `wan2.2/wan2.2/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors` | `models/diffusion_models/` |
+| Text encoder | `umt5_xxl_fp8_e4m3fn_scaled.safetensors` (`type="wan"`) | `models/text_encoders/` or `models/clip/` |
 | VAE | `wan_2.1_vae.safetensors` | `models/vae/` |
-| LoRA (high) | `SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors` | `models/loras/` |
-| LoRA (low) | `SVI_v2_PRO_Wan2.2-I2V-A14B_LOW_lora_rank_128_fp16.safetensors` | `models/loras/` |
-| LoRA (lightning, high) | `Wan_2_2_I2V_A14B_HIGH_lightx2v_4step_lora_v1030_rank_64_bf16.safetensors` | `models/loras/` |
-| LoRA (lightning, low) | `wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors` | `models/loras/` |
+| LoRA (SVI high) | `wan_22/SVI_v2_PRO_Wan2.2-I2V-A14B_HIGH_lora_rank_128_fp16.safetensors` | `models/loras/` |
+| LoRA (SVI low) | `wan_22/SVI_v2_PRO_Wan2.2-I2V-A14B_LOW_lora_rank_128_fp16.safetensors` | `models/loras/` |
+| LoRA (Lightning high) | `wan_22/Wan_2_2_I2V_A14B_HIGH_lightx2v_4step_lora_v1030_rank_64_bf16.safetensors` | `models/loras/` |
+| LoRA (Lightning low) | `wan_22/wan2.2_i2v_A14b_low_noise_lora_rank64_lightx2v_4step_1022.safetensors` | `models/loras/` |
+| 2× Upscaler (Stage 2) | `RealESRGAN_x2plus.pth` | `models/upscale_models/` |
+| RIFE ckpt (Stage 4) | `rife49` (auto-managed by `FL_RIFE`) | ComfyUI RIFE cache |
+| Optional SDXL / YOLO | `novaRealityXL_ilV90.safetensors`, `bbox/hand_yolov8n.pt` | `models/checkpoints/`, `models/ultralytics/` |
 
-**GGUF alternative** — if you prefer the quantised UNETs, `ComfyUI-GGUF` is enough on its own
-(`wan2.2_i2v_high_noise_14B_Q8_0.gguf` / `wan2.2_i2v_low_noise_14B_Q8_0.gguf`), and the `UNETLoader`
-node becomes `UnetLoaderGGUF`.
-
-**Anchor image** — one reference image in `<ComfyUI>/input/`. This is the only input the pipeline
-takes; it defines the character's identity, costume and palette for all 24 rounds.
+> If your local `diffusion_models/` or `loras/` subfolders omit `wan2.2\wan2.2\` or `wan_22\`, update those filename strings in the bootstrap and continue workflow JSONs accordingly.
 
 ---
 
-## Workflow
+## Quick Start (V109)
 
-Two workflow files, in **both API format and UI format**:
+1. Put your full-body portrait anchor image in `<ComfyUI>/input/`, e.g. `my_anchor.png` (and adapt `OUTFIT_LOCK`, `SCENE_LOCK`, and `DANCE_BASE` in [`run_fuke_shortsegV109.py`](run_fuke_shortsegV109.py) if using a different character/scene).
+2. Configure environment variables or pass CLI flags:
 
-| File | Format | Nodes | Links |
-|---|---|---|---|
-| `workflow_fuke_shortsegV92_Claude_bootstrap.json` | API | 33 | — |
-| `workflow_fuke_shortsegV92_Claude_continue.json` | API | 34 | — |
-| `workflow_fuke_shortsegV92_Claude_bootstrap_ui.json` | **UI** | 33 | 38 |
-| `workflow_fuke_shortsegV92_Claude_continue_ui.json` | **UI** | 34 | 39 |
-
-The `_ui` files are the ones to upload — Civitai renders a UI-format node graph and ignores an
-API-format one. Both were round-trip verified (UI → API reproduces the original API JSON field for
-field) and link-endpoint validated.
-
-### Graph structure
-
+```bash
+# Optional environment configuration
+set COMFY_ROOT=D:\ComfyUI
+set COMFY_URL=http://127.0.0.1:8188
+set FUKE_OUTPUT_DIR=./output_fuke_shortsegV109_P1
+set ORIGINAL_BASE=my_anchor.png
 ```
+
+3. Validate all 24 rounds without queueing anything to ComfyUI:
+
+```bash
+python run_fuke_shortsegV109.py --dry-run
+```
+
+4. Start ComfyUI, run a 6-round preview or all 24 rounds:
+
+```bash
+# Preview R01..R06 first
+python run_fuke_shortsegV109.py --rounds 6 --base-image my_anchor.png --comfy-root "D:\ComfyUI"
+
+# Full 24-round generation (with pop QC & automatic seed retry)
+python run_fuke_shortsegV109.py --base-image my_anchor.png --comfy-root "D:\ComfyUI"
+```
+
+Useful runner flags: `--comfy-root DIR`, `--comfy-url URL`, `--output-dir DIR`, `--base-image NAME`, `--tag STR`, `--rounds N`, `--start-round K`, `--motion F`, `--cfg F`, `--drop N`, `--prev-dir DIR`, `--prev-prefix STR`, `--no-qc`, `--no-merge`, `--dry-run`.
+
+---
+
+## Post-Processing Pipeline (`postprocess_24R_V109.py`)
+
+Run the 4-stage pipeline on the generated 24-round directory:
+
+```bash
+# Zero-side-effect dry run (prints ComfyUI chunk workflows without connecting)
+python postprocess_24R_V109.py --dry-run --stage all --max-chunks 1
+
+# Run full commercial standard chain: Stage 1 -> Stage 2 -> Stage 4
+python postprocess_24R_V109.py --stage all \
+    --root ./output_fuke_shortsegV109_P1 \
+    --comfy-root "D:\ComfyUI" \
+    --comfy-url http://127.0.0.1:8188
+```
+
+Stage breakdown and outputs under `<root>/_post24R/`:
+1. **Stage 1 (`--stage 1`)**: `stage1_merged_544x960_16fps.mp4` — local seam color alignment + `drop=4` stitch.
+2. **Stage 2 (`--stage 2`)**: `stage2_upscaled_960x1680_16fps.mp4` — chunked `RealESRGAN_x2plus.pth` 2× upscale + `ImageCASharpening+` (`--sharpen 0.20`).
+3. **Stage 3 (`--stage 3`, optional)**: `stage3_detailed_960x1680_16fps.mp4` — per-frame YOLO + SEGSDetailer (`--yolo-models bbox\hand_yolov8n.pt`).
+4. **Stage 4 (`--stage 4`)**: `stage4_rife_960x1680_64fps.mp4` → **`FINAL_960x1680_60fps.mp4`** — chunked 4× `FL_RIFE` (`rife49`) with `RIFE_OVERLAP_TRIM=1` followed by commercial `libx264 -preset slow -crf 14 -profile:v high -level 4.2 -pix_fmt yuv420p` BT.709 `60 fps` (`+faststart`) encode.
+
+Additional flags: `--work-dir`, `--run-tag`, `--chunk-size` (default `64`), `--upscale-mode` (`model` | `sdxl`), `--seam-blend`, `--master-grade` (default `False`), `--trim-duration` (default `-1.0`), `--fade-out` (default `2.0`).
+
+---
+
+## Workflow Graph & Parameters
+
+```text
 LoadImage (anchor)
       │
       ▼
-FindPerfectResolution (832 wide, divisible by 16)
+FindPerfectResolution (544×960 portrait in V109; 832×1232 in V92)
       │
       ▼
    VAEEncode ──────────────────────────┐
       │                                │
-UNETLoader ×2 (high + low noise)       │
+UNETLoader ×2 (high + low noise fp8)   │
       │                                │
-LoraLoaderModelOnly ×4                 │
+LoraLoaderModelOnly ×3                 │
   SVI v2 PRO HIGH / LOW (rank 128)     │
   LightX2V 4-step HIGH / LOW (rank 64) │
       │                                │
@@ -322,288 +234,81 @@ ModelPatchTorchSettings ×3 (fp16 accum)│
       │                                │
 PathchSageAttentionKJ ×2               │
       │                                │
-IAMCCS_WanImageMotion ─────────────────┤   (bootstrap: no prev latent)
+IAMCCS_WanImageMotion ─────────────────┤   (bootstrap: use_prev_samples=False)
   length 81, motion 1.18,              │   (continue:  loads prev latent)
-  latent_refresh 0.8,                 │
-  anchor_samples ← node 17            │
+  latent_refresh 0.8, MLC=1,           │
+  lock_start_slots=1,                  │
+  add_reference_latents=False,         │
+  anchor_samples ← VAEEncode           │
       │                                │
-KSamplerAdvanced ×3                    │
-  steps 0–2  (CFG 3.0, euler/simple)   │
-  steps 2–6  (CFG 1.0)                │
-  steps 6–10 (CFG 1.0)                │
+KSamplerAdvanced ×3 (euler/simple)     │
+  steps 0–2  (CFG 3.0)                 │
+  steps 2–6  (CFG 1.0, high)           │
+  steps 6–10 (CFG 1.0, low)            │
       │                                │
 VAEDecode ×2 ──────────────────────────┘
       │
-      ▼
-ImageColorMatch+ (LAB, factor 0.9)  ← against the anchor image
-      │
-      ├──────────────► SaveLatent  (feeds the next round)
-      ▼
-VHS_VideoCombine (30 fps, h264-mp4-high)
+      ├──► ImageColorMatch+ (LAB 0.90) ──► VHS_VideoCombine (h264-mp4-high)
+      └──► SaveLatent (raw KS3 latent) ──► feeds next round
 ```
 
-The **bootstrap** workflow encodes the anchor image and generates round 1 from scratch. The
-**continue** workflow additionally loads the previous round's saved latent
-(`fuke_shortsegV92_Claude_P1_prev.latent`) and enables `use_prev_samples` on the motion node, which
-is what makes the rounds chain instead of restarting.
-
 ---
 
-## Parameters
+## Measured Results
 
-### Generation
+### V109 Commercial 60 fps Pipeline (`FINAL_960x1680_60fps.mp4`)
 
-| Parameter | Value | Where |
-|---|---|---|
-| Rounds | 24 | `TOTAL_ROUNDS` |
-| Frames per round | 81 | `IAMCCS_WanImageMotion.length` |
-| Head frames dropped | 4 (from R02+) | `DROP_HEAD_FROM_R2` |
-| Output schedule | `81 + 23×77 = 1,852` frames | derived |
-| Resolution | 832 × 1232 (aspect 0.675 ≈ 2:3) | `FindPerfectResolution` |
-| FPS | 30 | `VHS_VideoCombine.frame_rate` |
-| Seed | 123456789 | `Seed (rgthree)`, `SEED_BASE` |
-| Sampler / scheduler | `euler` / `simple` | `KSamplerAdvanced` |
-| Steps | 3 stages: 0–2, 2–6, 6–10 (10 effective) | `INTConstant` 2 / 6 / 10 |
-| CFG | 3.0 (lightning stage), 1.0 (low-noise stages) | `FloatConstant` |
-| Shift | 8 | `ModelSamplingSD3` |
-| Motion | 1.18 | `MOTION` |
-| Latent refresh | 0.8 | `LATENT_REFRESH` |
-| Motion latent count | 1 | `IAMCCS_WanImageMotion` |
-| Anchor samples | fed from node 17 (`FindPerfectResolution` output) | `IAMCCS_WanImageMotion.anchor_samples` |
-| Colour match | LAB, factor 0.9 | `CM_FACTOR` / `ImageColorMatch+` |
-| Max retries | 2 (generation), 2 (QC) | `MAX_RETRIES`, `QC_RETRIES` |
-| Round timeout | 90 min | `ROUND_TIMEOUT_MIN` |
+All figures below were measured directly from a complete 24-round V109 production run:
 
-### Locked prompt blocks
+- **Generation QC (`qc_log.csv`)**: `26` logged runs across `24` rounds (`2` automatic pop-QC retries triggered and resolved cleanly); final per-round `max_changed_pct` range `1.25% – 18.0%`, `max_ratio` range `1.25 – 4.76`.
+- **Pipeline Stage Artifacts (`ffprobe`)**:
 
-Three prompt blocks stay constant across every round so identity, costume and background cannot
-drift:
+| Stage Output | Resolution | FPS | Frames | Duration | Bitrate | Size | Profile / Color |
+|---|---|---|---|---|---|---|---|
+| `stage1_merged_544x960_16fps.mp4` | `544×960` | `16` | `1,852` | `115.75 s` | `6.07 Mbps` | `87.8 MB` | `High@L3.1` |
+| `stage2_upscaled_960x1680_16fps.mp4` | `960×1680` | `16` | `1,852` | `115.75 s` | `24.55 Mbps` | `355.1 MB` | `High@L4.0` / `bt709` |
+| `stage4_rife_960x1680_64fps.mp4` | `960×1680` | `64` | `7,405` | `115.70 s` | `24.56 Mbps` | `355.2 MB` | `High@L4.2` / `bt709` |
+| **`FINAL_960x1680_60fps.mp4`** | **`960×1680`** | **`60`** | **`6,942`** | **`115.70 s`** | **`17.73 Mbps`** | **`256.4 MB`** | **`High@L4.2` / `bt709`** |
 
-- **`OUTFIT_LOCK`** — character identity, white hair, red eyes, cyan silk qipao with gold floral
-  embroidery, red frog buttons, high mandarin collar, **high side slit**, plus explicit
-  no-costume-change / no-hairstyle-change terms.
-- **`SCENE_LOCK`** — static camera, locked-off shot, cherry blossom trees perfectly still, only a
-  few pink petals drifting down.
-- **`NEGATIVE`** — quality, text/watermark, colour, outfit-change, camera-movement, and
-  anti-"holding a pose" / anti-jitter terms.
+- **Seam & Interpolation Continuity**:
+  - **Stage 1 (23 inter-round seams)**: Inter-frame MSE `62.12 – 133.92` (median `100.92`, mean `99.20`), zero hard resets.
+  - **Stage 4 (RIFE chunk 0\|1 boundary, `RIFE_OVERLAP_TRIM = 1`)**: Adjacent frame MSE across frames `250..256 @ 64 fps` measured `51.56 – 62.30` with **`f252→f253 = 56.30`** directly on the chunk boundary (zero dropped frames, zero chunk-edge stutter).
+- **Full-Duration Tonal Stability, Sky Cleanliness & Sharpness (`t = 1.0 s – 112.5 s`)**:
+  - `LAB L` mean: `137.1 – 139.0` (virtually flat tonal stability across all 24 rounds)
+  - `HSV Sat` mean: `93.8 – 99.0`
+  - `Laplacian Variance` (sharpness): `301.9 – 358.5`
+  - `SkyGridStd` (high-pass background sky patch std): `0.74 – 5.01`
+  - `Blk<=12` (global shadow share): `2.79% – 5.20%`; `BamCrush<=8` (shadow bamboo foliage crush): `0.00% – 0.03%`
 
-### QC thresholds
+<details>
+<summary>V92 Legacy Baseline Measurements (<code>832×1232 @ 30 fps</code>, 61.73 s)</summary>
 
-| Threshold | Value | Meaning |
-|---|---|---|
-| `POP_FRAC` | 7.5 % | large-change pixel share floor |
-| `POP_RATIO` | 4.0 | share vs. surrounding median floor |
-| `STEP_MAX` | 0.25 | residual round-to-round colour step, in 8-bit levels |
-| `FLICKER_LOSS_MAX` | 0.25 | mean-L flicker loss budget, in 8-bit levels |
-| Seam "seamless" band | 0.80 – 1.25 | join speed ratio vs. surrounding motion |
+- Seam repair median speed ratio improved `0.198 → 0.943`, seam colour step `|dL|` reduced `0.294 → 0.143`, `0 / 60` scene-change spikes on seams.
+- Round-to-round `LAB dL` spread reduced `0.560 → 0.0936`; global residual `0.0019` vs reference.
+- Container: `1,852` frames @ `30 fps`, `61.73 s`, `14.59 Mbps`, H.264 High, `faststart`, zero black/frozen segments.
 
----
-
-## Results
-
-All figures below are measured **on the delivered file**
-(`V92Claude_24R_master_444_refmatched.mp4`, 1,852 frames decoded, 0 decode errors), not predicted.
-
-### Seam repair
-
-| Metric | Before | After |
-|---|---|---|
-| Join speed ratio vs. surrounding motion (median) | **0.198** | **0.943** |
-| Join speed ratio (mean) | 0.217 | 1.048 |
-| Join colour step \|dL\| (median) | **0.294** | **0.143** |
-| Joins closer to 1.00 after repair | — | **19 / 23** |
-| Joins inside the 0.80–1.25 band | 0 / 23 | 9 / 23 |
-| Scene-change spikes landing on a join | — | **0 / 60** |
-
-### Colour
-
-| Metric | Before | After |
-|---|---|---|
-| Round-to-round colour spread (LAB dL) | 0.560 | **0.0936** |
-| Round-to-round spread (LAB a) | 0.538 | 0.194 |
-| Round-to-round spread (LAB b) | 0.247 | 0.164 |
-| Delivered film vs. reference image (LAB L residual) | — | **0.0019** (tolerance 0.05) |
-
-### Motion and amplitude
-
-| Metric | Value |
-|---|---|
-| Optical flow, mean | 3.28 px/frame |
-| Optical flow, person region | 4.04 px/frame |
-| Optical flow, background region | 1.22 px/frame |
-| Background / person flow ratio | 0.336 |
-| Pause ratio (mean / max) | 0.041 / 0.158 |
-| Wrist-to-torso reach, max | 1.86 shoulder-widths (mean) |
-| Arm span, max | 2.80 shoulder-widths (mean) |
-| Elbow extension, max | 176.6° (mean) |
-| Pose detection rate | 98.6 % (1 glitch frame, in R23, excluded) |
-| Adjacent-round pose distance | 0.529 RMS (non-adjacent 0.536) |
-
-### Delivery file
-
-| | |
-|---|---|
-| Container | h264 High, yuv420p, faststart, 31 keyframes / 2 s GOP |
-| Bitrate | 14.59 Mbps |
-| Duration | 61.73 s (1,852 frames @ 30 fps, constant frame rate) |
-| Black / frozen segments | 0 / 0 |
-| Near-duplicate frame pairs | 0 |
-
-### Honest scope
-
-- **9 of 23** joins sit inside the tight 0.80–1.25 band. **8** remain slightly *slow* (0.34–0.71)
-  and **6** slightly *fast* (1.44–2.23). No join is a visible cut any more, but this is not a claim
-  of "zero seams".
-- The film is **silent** — add music after.
-- Aspect ratio is **832×1232 (0.675)**, matching 2:3 rather than 9:16. Crop the width if you need
-  exact 9:16.
-- 60 frames score above 1.0 on the scene-change scale, and **none of them land on a join** — they
-  are choreography beats, not cuts.
-- **Content note:** the reference costume is a `high side slit` qipao and the film shows upper-thigh
-  skin. The negative prompt does **not** contain slit-suppression terms. Grade the upload
-  accordingly.
-
-### Where every number comes from
-
-| Claim | Source |
-|---|---|
-| Frame schedule, resolution, fps, base image | `data/inventory.json` |
-| Seam ratio 0.198 → 0.943, \|dL\| 0.294 → 0.143, 19/23 closer | `data/final_vs_baseline_seams.json` |
-| 0 / 60 scene spikes on joins | `data/scene_spike_seams.json` |
-| Round-to-round spread 0.560 → 0.0936 | `data/probe_compare.json` |
-| Film vs. reference residual 0.0019 | `data/reference_color_match.json` |
-| Container / codec / bitrate / black-freeze audit | `data/delivery_audit.json` |
-| Trim = 4 is the only seamless value | `data/trim_sweep.json` |
-| Limb amplitude, pose detection rate | `data/V92Claude_limb_amplitude_summary.json` |
-| Flow by round, flow decomposition | `data/V92Claude_round_region_metrics.csv` / `.json` |
+</details>
 
 ---
 
 ## Changelog
 
-| Version | Date | Change |
+| Version | Date | Highlights |
 |---|---|---|
-| **V92** | 2026-11-14 | Prompt-only rewrite on top of the G3g generation parameters: 24 rounds arranged as a musical structure, per-round body-part and framing variation, motif A/B recurrence, and the vocabulary check that keeps a round inside its motion family. Generation parameters, workflow graph, colour handling, MLC and QC are unchanged from G3g. |
-| **G3i** | 2026-11-13 | Predecessor line — the last G-series runner before the V92 rewrite. |
-| **G3h** | 2026-11-12 | Predecessor line. |
-| **G3g** | 2026-11-11 | Base of the V92 prompt work; V92 inherits its parameters, workflow, colour handling, MLC and QC verbatim. |
-| **G3f** | 2026-11-11 | Added the anti-"holding a pose" and anti-jitter negative-prompt terms. |
-| **G3e** | 2026-11-10 | Established the `SCENE_LOCK` / `NEGATIVE` baseline that V92 keeps byte-identical. |
-| **V91 (anime)** | 2026-11-11 | Anime-styled variant on the same short-segment pipeline. |
-
-The V92 runner header records the reasoning that drove the rewrite: a review of the earlier cut noted
-that colour, identity, costume and background were already good, but the amplitude was too small,
-the poses repeated, and there was no sectional variation — and that the composition was head-to-thigh,
-so the accent rounds (kicks, steps) were wasting their force outside the frame. V92's choreography
-therefore only uses body parts visible in shot.
-
-**Development scale** — the lineage behind this pipeline starts in **June 2026**, when the same core
-problem was already being diagnosed: the 81-frame multi-segment structure and the "motion reads as
-fast-forward" failure. The runner scripts themselves were written across **September–November
-2026**. On the V92 release track alone: **142 runner scripts**, **86 distinct pipeline versions**
-(`v2`–`v733`), and **4,787 test artefacts** in the working tree for 2026-09 through 2026-11. Every
-one of those was a real generation that had to be watched, measured and thrown away before the next
-revision.
+| **V109** | 2026-11-19 | Restored **P1 golden sampling kernel** (`steps 2+4+4=10`, `MLC=1`, `lock_start_slots=1`, `add_reference_latents=False`, `lr=0.80`, `motion=1.18`, `LAB 0.90`) combined with V108 full-body anti-crop prompts and fixed `MOTION_GUARDRAIL`. Bundled full 4-stage post-processor [`postprocess_24R_V109.py`](postprocess_24R_V109.py) with `RIFE_OVERLAP_TRIM=1`, `ImageCASharpening+ (0.20)`, `INTERMEDIATE_CRF=12`, legacy `--master-grade` disabled by default, full-length preservation (`--trim-duration -1`), BT.709 commercial H.264 `60 fps` output (`960×1680`), env/CLI path parameterization, and loopback proxy bypass. |
+| **V108** | 2026-11-19 | Added full-body + footwear anti-crop framing locks/negatives, fixed slow-word guardrail collision, added `ImageCASharpening+`, fixed `RIFE_OVERLAP_TRIM=1`, removed dead `color_lock_tail_frame` path. |
+| **V106–V107** | 2026-11-18 | Transitioned to 9:16 `544×960 @ 16 fps` full-body generation (~5.06s/round) and built the chunked 4-stage ComfyUI + ffmpeg post-processing pipeline (`RealESRGAN_x2plus`, optional `SEGSDetailer`, `FL_RIFE`). Identified regressions from experimental `add_reference_latents=True` / `steps=12` / `MLC=2` / `lr=0.65` and reverted in V109. |
+| **V92** | 2026-11-14 | Initial open-source release: section-structured 24-round anime choreography (`832×1232 @ 30fps`) with latent bridging, LAB color match, and pop QC. |
 
 ---
 
 ## License
 
-The work in this repository falls into three categories with three different answers.
-
-**Our own code — MIT License.** The Python scripts in this package
-(`run_fuke_shortsegV92_Claude.py`, `v92_pipeline.py`, `v92_build_report.py`,
-`v92_factor_final.py`, `v92_factor_clip.py`) and the original workflow design are released under
-the MIT License: you may use, modify, redistribute and sublicense them, provided the copyright
-notice and this permission notice are included.
-
-```
-MIT License
-
-Copyright (c) 2026 V92 contributors
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-**Third-party custom nodes — keep their licences.** The workflow depends on external node packs
-that are **not** bundled here and **not** covered by the MIT grant above:
-
-| Pack | Licence |
-|---|---|
-| IAMCCS-nodes | GPL |
-| ComfyUI-KJNodes | GPL |
-| ComfyUI-VideoHelperSuite | GPL |
-| comfyui_essentials | MIT |
-| rgthree-comfy | MIT |
-| ComfyUI-GGUF | Apache 2.0 |
-| comfyui-find-perfect-resolution | *(no licence file published — treat as all-rights-reserved)* |
-
-Install them from their own repositories and observe their terms. A workflow that loads GPL nodes is
-not thereby relicensed; the GPL obligation attaches to the GPL node code itself.
-
-**Model weights — not packaged, follow the source licence.** No `.safetensors` or `.gguf` file is
-included in this repository. The base model, the text encoder, the VAE and all LoRAs are the
-property of their respective authors and are redistributed under their own terms. Download them from
-their official sources and respect those terms — including any non-commercial or use-restriction
-clauses the individual LoRAs carry.
-
-**The generated video.** The shipped film was produced with the models and nodes above. If you
-publish it or derivatives of it, credit the underlying models and node authors, and keep the
-generated-material terms of the weights you used in mind.
-
-**Trademarks.** "Wan 2.2", "LightX2V", "SVI", "ComfyUI", "Civitai" and the names of the node packs
-above belong to their respective owners and are used here only to identify what this pipeline runs on.
-
----
-
-## Contact
-
-- **Issues with the workflow or the scripts** — open an issue on the repository this package was
-  published to.
-- **Upstream models and nodes** — each project has its own repository and issue tracker; please
-  report model or node problems there rather than here.
-- **Business / licensing enquiries** — contact details to be added.
+- **Scripts & Workflow Designs (`*.py`, `workflow_*.json`)**: Released under the **MIT License**.
+- **Third-Party Custom Nodes & Model Weights**: Not bundled; observe each upstream repository and model license (GPL / MIT / Apache 2.0 / non-commercial or source terms where applicable).
 
 ---
 
 ## Credits
 
-This pipeline exists because a lot of different hands and models touched it.
-
-- **Claude** — wrote the V92 runner and the whole `G3 → V92` line of prompt choreography: the
-  musical section structure, the recurring motifs, the per-round body-part and framing variation, and
-  the vocabulary checks that stop a round from drifting outside the intended motion family.
-- **GPT** — the creative review that made the rewrite necessary in the first place. Its notes on the
-  earlier cut (colour, identity, costume and background were good; amplitude too small, poses
-  repetitive, no sectional variation) are quoted at the top of the runner script and are the direct
-  cause of the section-based approach in V92.
-- **Grok (xAI)** — the reference image.
-- **Wan 2.2 / LightX2V / SVI / KJNodes / VideoHelperSuite / IAMCCS / rgthree / comfyui_essentials** —
-  the upstream base models, LoRAs and custom nodes this runs on. Please credit and support them.
-
----
-
-## License summary
-
-| Component | Terms |
-|---|---|
-| `run_fuke_shortsegV92_Claude.py`, `v92_*.py`, workflow design | MIT (see above) |
-| Custom node packs | Their own licences — GPL / MIT / Apache / unspecified |
-| Model weights | Not included — their own terms |
-| Generated film | Generated with the above; credit the models and node authors |
+- **Upstream Models & Nodes**: Wan 2.2, LightX2V, SVI v2 PRO, IAMCCS-nodes, ComfyUI-KJNodes, VideoHelperSuite, comfyui_essentials, ComfyUI_Fill-Nodes (`FL_RIFE`), ComfyUI-Impact-Pack, ComfyUI-RMBG, ComfyUI_UltimateSDUpscale, and rgthree-comfy.

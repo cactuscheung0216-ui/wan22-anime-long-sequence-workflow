@@ -1,0 +1,45 @@
+# Outputs, renders & working artifacts
+output_*/
+_post24R/
+_trimmed/
+_chunks_*/
+qc_log.csv
+concat_list.txt
+*.mp4
+*.webm
+*.mov
+*.mkv
+*.avi
+*.gif
+*.latent
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Model weights
+*.safetensors
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.bin
+*.gguf
+
+# Secrets, environment & local configs
+.env
+.env.*
+*.key
+*.pem
+*credentials*
+*secret*
+
+# Python & IDE caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+*.bak*
+*.tmp
+.DS_Store
+Thumbs.db
